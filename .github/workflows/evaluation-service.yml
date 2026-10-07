@@ -1,0 +1,29 @@
+name: Evaluation Service CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/evaluation-service/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/evaluation-service/**'
+
+jobs:
+  call-go:
+    uses: ./.github/workflows/reusable-go.yml
+    with:
+      service-path: 'src/evaluation-service'
+      service-name: 'evaluation-service'
+      os: 'ubuntu-latest'
+      go-version: '1.24'
+    secrets: inherit
+
+  call-docker:
+    needs: call-go
+    uses: ./.github/workflows/reusable-docker.yml
+    with:
+      service-path: 'src/evaluation-service'
+      image-name: 'evaluation-service'
+    secrets: inherit

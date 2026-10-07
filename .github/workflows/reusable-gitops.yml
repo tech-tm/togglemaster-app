@@ -1,0 +1,189 @@
+name: Reusable GitOps Update
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        required: true
+        type: string
+      image-tag:
+        required: true
+        type: string
+      registry:
+        required: true
+        type: string
+      gitops-repo:
+        required: false
+        type: string
+        default: 'devops-tm/togglemaster-deploy'
+      gitops-branch:
+        required: false
+        type: string
+        default: 'deploy'
+      service-folder:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      PERSONAL_ACCESS_TOKEN:
+        required: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      # ============================================================
+      # 1. CONFIGURAR CREDENCIAIS AWS (para fallback e debug)
+      # ============================================================
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # ============================================================
+      # 2. CHECKOUT DO REPOSITÓRIO GITOPS
+      # ============================================================
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          ref: ${{ inputs.gitops-branch }}
+          path: gitops-repo
+
+      - name: Debug - Checkout path
+        run: |
+          echo "Repository: ${{ inputs.gitops-repo }}"
+          echo "Branch: ${{ inputs.gitops-branch }}"
+          echo "Path: gitops-repo"
+          ls -la gitops-repo/ || echo "Diretório vazio ou não encontrado"
+
+      # ============================================================
+      # 3. CONFIGURAR GIT USER
+      # ============================================================
+      - name: Setup Git user
+        working-directory: gitops-repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Git user configured"
+
+      # ============================================================
+      # 4. DETERMINAR PASTA DO SERVIÇO
+      # ============================================================
+      - name: Determine service folder
+        id: folder
+        run: |
+          FOLDER="${{ inputs.service-folder }}"
+          if [ -z "$FOLDER" ]; then
+            FOLDER="${{ inputs.image-name }}"
+            FOLDER="${FOLDER#togglemaster-}"
+            FOLDER="${FOLDER%-service}"
+          fi
+          echo "FOLDER=$FOLDER" >> $GITHUB_OUTPUT
+          echo "Service folder determined: $FOLDER"
+
+      - name: Debug - Service folder
+        run: |
+          echo "Image name: ${{ inputs.image-name }}"
+          echo "Service folder: ${{ steps.folder.outputs.FOLDER }}"
+          echo "Full path: gitops-repo/k8s/base/services/${{ steps.folder.outputs.FOLDER }}"
+          ls -la gitops-repo/k8s/base/services/${{ steps.folder.outputs.FOLDER }} || echo "Pasta não encontrada!"
+
+      # ============================================================
+      # 5. OBTER REGISTRY (com fallback automático)
+      # ============================================================
+      - name: Ensure registry
+        id: registry
+        run: |
+          REGISTRY="${{ inputs.registry }}"
+          if [ -z "$REGISTRY" ]; then
+            echo "Registry input is empty. Fetching from AWS..."
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            REGISTRY="$ACCOUNT_ID.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com"
+            echo "Fetched registry: $REGISTRY"
+          else
+            echo "Registry provided: $REGISTRY"
+          fi
+          echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # 6. VALIDAR REGISTRY
+      # ============================================================
+      - name: Validate registry
+        run: |
+          REGISTRY="${{ steps.registry.outputs.registry }}"
+          if [ -z "$REGISTRY" ]; then
+            echo "ERROR: registry is still empty after fallback. Cannot proceed."
+            exit 1
+          fi
+          echo "Registry validated: $REGISTRY"
+
+      # ============================================================
+      # 7. ATUALIZAR KUSTOMIZATION.YAML
+      # ============================================================
+      - name: Update kustomization.yaml (overlay)
+        working-directory: gitops-repo/k8s/overlays/prod
+        run: |
+          git fetch origin
+          git checkout ${{ inputs.gitops-branch }} || git checkout -b ${{ inputs.gitops-branch }}
+          git pull --rebase origin ${{ inputs.gitops-branch }} || true
+
+          # Atualiza a imagem com registry completo e tag
+          kustomize edit set image ${{ inputs.image-name }}=${{ steps.registry.outputs.registry }}/${{ inputs.image-name }}:${{ inputs.image-tag }}
+
+          git add kustomization.yaml
+          git commit -m "chore: update ${{ inputs.image-name }} to ${{ inputs.image-tag }}" || echo "Nenhuma alteração"
+          
+      # ============================================================
+      # 8. PUSH COM RETRY (com debugs adicionais)
+      # ============================================================
+      - name: Push changes
+        working-directory: gitops-repo/k8s/base/services/${{ steps.folder.outputs.FOLDER }}
+        run: |
+          echo "Current branch: $(git branch --show-current)"
+          echo "Remote branches:"
+          git branch -r
+
+          MAX_RETRIES=5
+          RETRY_DELAY=2
+          PUSH_SUCCESS=false
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Tentativa $i de $MAX_RETRIES..."
+            if git push origin ${{ inputs.gitops-branch }}; then
+              echo "Push bem-sucedido!"
+              PUSH_SUCCESS=true
+              break
+            else
+              echo "Push falhou. Tentando rebase e repetindo..."
+              git pull --rebase origin ${{ inputs.gitops-branch }} 2>/dev/null || true
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+            fi
+          done
+
+          if [ "$PUSH_SUCCESS" = false ]; then
+            echo "ERROR: Falha após $MAX_RETRIES tentativas."
+            echo "Último log:"
+            git status
+            git log --oneline -5
+            exit 1
+          fi
+
+      # ============================================================
+      # 9. DEBUG FINAL (confirmar mudança no repositório remoto)
+      # ============================================================
+      - name: Final debug
+        working-directory: gitops-repo
+        run: |
+          echo "=========================================="
+          echo "FINAL DEBUG - REMOTE REPOSITORY"
+          echo "=========================================="
+          git log --oneline -5
+          echo ""
+          echo "Último commit:"
+          git show --stat

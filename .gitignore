@@ -1,0 +1,62 @@
+# Diretorios e arquivos locais do terraform
+**/.terraform/*
+.terraform/
+
+
+# Arquivos de estado do terraform
+*.tfstate
+*.tfstate.*
+terraform.tfstate
+terraform.tfstate.backup
+
+# Arquivo de trava de dependencias do terraform
+.terraform.lock.hcl
+
+
+# Logs de erro e sobrescritas
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Variaveis de Ambiente e Chaves de Seguranca
+.env
+.env.*
+*.pem
+credentials
+*.auto.tfvars
+k8s/services/secret.yaml
+k8s/services/aws-auth.yaml
+k8s/services/configmap.yaml
+k8s/services/kustomization.yaml
+k8s/db-init/endpoints-configmap.yaml
+
+# Ambientes Virtuais Python
+venv/
+env/
+.venv/
+
+# Caches e Artefatos Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Artefatos Go e Compilados
+# O Go gera executaveis sem extensao no Linux, bloqueando nomes comuns
+bin/
+obj/
+*.exe
+*.out
+*.test
+auth-service/auth-service
+flag-service/flag-service
+evaluation-service/evaluation-service
+targeting-service/targeting-service
+
+# Arquivos de IDE e Sistema Operacional
+.vscode/
+.idea/
+.DS_Store

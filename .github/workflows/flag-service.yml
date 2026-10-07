@@ -1,0 +1,29 @@
+name: Flag Service CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/flag-service/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/flag-service/**'
+
+jobs:
+  call-py:
+    uses: ./.github/workflows/reusable-py.yml
+    with:
+      service-path: 'src/flag-service'
+      service-name: 'flag-service'
+      os: 'ubuntu-latest'
+      python-version: '3.9'
+    secrets: inherit
+
+  call-docker:
+    needs: call-py
+    uses: ./.github/workflows/reusable-docker.yml
+    with:
+      service-path: 'src/flag-service'
+      image-name: 'flag-service'
+    secrets: inherit

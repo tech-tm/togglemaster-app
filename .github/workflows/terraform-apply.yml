@@ -1,0 +1,383 @@
+name: Terraform Apply
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
+  BUCKET_STATE: ${{ secrets.TERRAFORM_STATE_BUCKET }}
+
+jobs:
+  # ============================================================
+  # SECURITY
+  # ============================================================
+  apply_security:
+    name: Security (SSM + KMS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/security
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/security/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+
+      - name: Terraform Apply (create/update)
+        working-directory: terraform/environments/prod/security
+        run: |
+          terraform apply \
+            -auto-approve \
+            -var-file="terraform.tfvars"
+
+  # ============================================================
+  # DATA (RDS + Redis + DynamoDB + SQS) WITH RECONCILIATION
+  # ============================================================
+  apply_data:
+    name: DATA (RDS + Redis + DynamoDB + SQS)
+    needs: apply_security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/data
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/data/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+
+      - name: Refresh State (detect and apply drift)
+        working-directory: terraform/environments/prod/data
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "STEP 1: REFRESH-ONLY PLAN"
+          echo "=========================================="
+
+          # Executa refresh-only para verificar drift
+          set +e
+          terraform plan \
+            -refresh-only \
+            -detailed-exitcode \
+            -var-file="terraform.tfvars" \
+            -out=refresh.tfplan
+
+          REFRESH_EXIT=$?
+          set -e
+
+          if [ $REFRESH_EXIT -eq 1 ]; then
+            echo "ERROR: Terraform plan failed."
+            exit 1
+          fi
+
+          if [ $REFRESH_EXIT -eq 2 ]; then
+            echo "Drift detected. Applying refresh-only to update state..."
+            terraform apply -auto-approve refresh.tfplan
+          else
+            echo "No drift detected. State is up-to-date."
+          fi
+
+      - name: Import Existing Resources
+        working-directory: terraform/environments/prod/data
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "STEP 2: IMPORT EXISTING RESOURCES"
+          echo "=========================================="
+
+          # Função que tenta importar; ignora se já estiver no estado
+          try_import() {
+            local ADDRESS="$1"
+            local ID="$2"
+            local CHECK_CMD="$3"
+
+            echo "Checking $ADDRESS (ID: $ID) ..."
+
+            if eval "$CHECK_CMD" >/dev/null 2>&1; then
+              echo "  Resource exists in AWS."
+
+              set +e
+              OUTPUT=$(terraform import "$ADDRESS" "$ID" 2>&1)
+              EXIT_CODE=$?
+              set -e
+
+              if [ $EXIT_CODE -eq 0 ]; then
+                echo "  Import successful."
+              elif echo "$OUTPUT" | grep -q "already managed by Terraform"; then
+                echo "  Already in state. Skipping."
+              else
+                echo "  Import failed with exit code $EXIT_CODE."
+                echo "  Output: $OUTPUT"
+                exit $EXIT_CODE
+              fi
+            else
+              echo "  Resource not found in AWS. Nothing to import."
+            fi
+          }
+
+          # ------------------------------------------------------------
+          # 1. RDS instances (prefixo rds-postgres-)
+          # ------------------------------------------------------------
+          echo "Looking for RDS instances with prefix 'rds-postgres-'..."
+
+          # Usa --output json e jq para extrair cada identificador como uma linha separada
+          INSTANCES_JSON=$(aws rds describe-db-instances \
+            --region "$AWS_REGION" \
+            --query 'DBInstances[?starts_with(DBInstanceIdentifier, `rds-postgres-`)].DBInstanceIdentifier' \
+            --output json 2>/dev/null || echo '[]')
+
+          # Itera sobre cada identificador usando jq
+          echo "$INSTANCES_JSON" | jq -r '.[]' | while read -r IDENTIFIER; do
+            if [ -z "$IDENTIFIER" ]; then continue; fi
+            SERVICE="${IDENTIFIER#rds-postgres-}"  # Remove prefixo
+            ADDRESS="module.rds.aws_db_instance.postgres[\"$SERVICE\"]"
+            CHECK="aws rds describe-db-instances --db-instance-identifier $IDENTIFIER --region $AWS_REGION"
+            try_import "$ADDRESS" "$IDENTIFIER" "$CHECK"
+          done
+
+          # ------------------------------------------------------------
+          # 2. Redis
+          # ------------------------------------------------------------
+          REDIS_ID="togglemaster-redis"
+          REDIS_ADDRESS="module.elasticache.aws_elasticache_cluster.redis"
+          CHECK="aws elasticache describe-cache-clusters --cache-cluster-id $REDIS_ID --region $AWS_REGION"
+          try_import "$REDIS_ADDRESS" "$REDIS_ID" "$CHECK"
+
+          # ------------------------------------------------------------
+          # 3. DynamoDB
+          # ------------------------------------------------------------
+          DYNAMO_NAME="togglemaster"
+          DYNAMO_ADDRESS="module.dynamodb.aws_dynamodb_table.this"
+          CHECK="aws dynamodb describe-table --table-name $DYNAMO_NAME --region $AWS_REGION"
+          try_import "$DYNAMO_ADDRESS" "$DYNAMO_NAME" "$CHECK"
+
+          # ------------------------------------------------------------
+          # 4. SQS
+          # ------------------------------------------------------------
+          SQS_NAME="togglemaster"
+          SQS_ADDRESS="module.sqs.aws_sqs_queue.this"
+          QUEUE_URL=$(aws sqs get-queue-url --queue-name "$SQS_NAME" --region "$AWS_REGION" --query QueueUrl --output text 2>/dev/null || echo "")
+          if [ -n "$QUEUE_URL" ]; then
+            CHECK="aws sqs get-queue-url --queue-name $SQS_NAME --region $AWS_REGION"
+            try_import "$SQS_ADDRESS" "$QUEUE_URL" "$CHECK"
+          fi
+
+          echo "Import step completed."
+
+      - name: Plan Final Changes
+        working-directory: terraform/environments/prod/data
+        run: |
+          echo "=========================================="
+          echo "STEP 3: PLAN FINAL CHANGES"
+          echo "=========================================="
+          terraform plan -var-file="terraform.tfvars" -out=tfplan
+
+      - name: Apply Final Changes
+        working-directory: terraform/environments/prod/data
+        run: |
+          echo "=========================================="
+          echo "STEP 4: APPLY FINAL CHANGES"
+          echo "=========================================="
+          terraform apply -auto-approve tfplan
+
+  # ============================================================
+  # PLATFORM (ECR)
+  # ============================================================
+  apply_platform:
+    name: Platform (ECR)
+    needs: apply_security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/platform
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/platform/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+
+      - name: Terraform Apply (create/update)
+        working-directory: terraform/environments/prod/platform
+        run: |
+          terraform apply \
+            -auto-approve \
+            -var-file="terraform.tfvars"
+
+  # ============================================================
+  # COMPUTE (EKS)
+  # ============================================================
+  apply_compute:
+    name: Compute (EKS)
+    needs: apply_security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/compute
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/compute/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+
+      - name: Terraform Apply (create/update)
+        working-directory: terraform/environments/prod/compute
+        run: |
+          terraform apply \
+            -auto-approve \
+            -var-file="terraform.tfvars"
+
+  # ============================================================
+  # NETWORKING (Security Groups)
+  # ============================================================
+  apply_networking:
+    name: Networking (Security Groups)
+    needs: [apply_data, apply_platform, apply_compute]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/networking
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/networking/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+
+      - name: Terraform Apply
+        working-directory: terraform/environments/prod/networking
+        run: |
+          terraform apply -auto-approve \
+            -var="terraform_state_bucket=$BUCKET_STATE"
+
+  trigger-argocd-install:
+    name: Trigger ArgoCD Installation
+    needs: [apply_networking]
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - name: Ensure deploy branch exists and trigger workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          script: |
+            const owner = 'togglemaster-fiapdevops';
+            const repo = 'togglemaster-deploy';
+            const workflowFile = 'argocd-install.yml';
+            const targetBranch = 'deploy';
+            const baseBranch = 'main'; // ou a branch padrão do repositório
+
+            try {
+              // 1. Verificar se a branch 'deploy' existe
+              let deployExists = false;
+              try {
+                await github.rest.repos.getBranch({
+                  owner,
+                  repo,
+                  branch: targetBranch
+                });
+                deployExists = true;
+                console.log(`Branch '${targetBranch}' já existe.`);
+              } catch (error) {
+                if (error.status === 404) {
+                  console.log(`Branch '${targetBranch}' não encontrada. Será criada.`);
+                } else {
+                  throw error;
+                }
+              }
+
+              // 2. Se não existir, criar a branch a partir de 'main'
+              if (!deployExists) {
+                // Obter o SHA do commit da branch base
+                const baseRef = await github.rest.git.getRef({
+                  owner,
+                  repo,
+                  ref: `heads/${baseBranch}`
+                });
+                const sha = baseRef.data.object.sha;
+                console.log(`Criando branch '${targetBranch}' a partir de '${baseBranch}' (SHA: ${sha})...`);
+
+                await github.rest.git.createRef({
+                  owner,
+                  repo,
+                  ref: `refs/heads/${targetBranch}`,
+                  sha: sha
+                });
+                console.log(`Branch '${targetBranch}' criada com sucesso.`);
+              }
+
+              // 3. Disparar o workflow na branch 'deploy'
+              console.log(`Disparando workflow '${workflowFile}' na branch '${targetBranch}'...`);
+              await github.rest.actions.createWorkflowDispatch({
+                owner,
+                repo,
+                workflow_id: workflowFile,
+                ref: targetBranch
+              });
+              console.log(`Workflow '${workflowFile}' disparado com sucesso.`);
+
+            } catch (error) {
+              console.error(`Erro: ${error.message}`);
+              if (error.status) console.error(`Status: ${error.status}`);
+              throw error;
+            }

@@ -1,0 +1,29 @@
+name: Auth Service CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/auth-service/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/auth-service/**'
+
+jobs:
+  call-go:
+    uses: ./.github/workflows/reusable-go.yml
+    with:
+      service-path: 'src/auth-service'
+      service-name: 'auth-service'
+      os: 'ubuntu-latest'
+      go-version: '1.25'
+    secrets: inherit
+
+  call-docker:
+    needs: call-go
+    uses: ./.github/workflows/reusable-docker.yml
+    with:
+      service-path: 'src/auth-service'
+      image-name: 'auth-service'
+    secrets: inherit

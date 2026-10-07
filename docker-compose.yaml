@@ -1,0 +1,144 @@
+version: '3.8'
+
+networks:
+  toggle-net:
+    driver: bridge
+
+services:
+  postgres-auth:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: auth_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./src/auth-service/db/init.sql:/docker-entrypoint-initdb.d/init.sql:Z
+    networks:
+      - toggle-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auth_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  postgres-shared:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: toggle_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./src/flag-service/db/init.sql:/docker-entrypoint-initdb.d/01-init-flags.sql:Z
+      - ./src/targeting-service/db/init.sql:/docker-entrypoint-initdb.d/02-init-targeting.sql:Z
+    networks:
+      - toggle-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d toggle_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  redis-cache:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - toggle-net
+
+  auth-service:
+    build:
+      context: ./src/auth-service
+    restart: on-failure
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: 8001
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-auth:5432/auth_db
+      MASTER_KEY: ${MASTER_KEY}
+    networks:
+      - toggle-net
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+
+  flag-service:
+    build:
+      context: ./src/flag-service
+    ports:
+      - "8002:8002"
+    environment:
+      PORT: 8002
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-shared:5432/toggle_db
+      AUTH_SERVICE_URL: http://auth-service:8001
+    networks:
+      - toggle-net
+    depends_on:
+      postgres-shared:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+
+  targeting-service:
+    build:
+      context: ./src/targeting-service
+    ports:
+      - "8003:8003"
+    environment:
+      PORT: 8003
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-shared:5432/toggle_db
+      AUTH_SERVICE_URL: http://auth-service:8001
+    networks:
+      - toggle-net
+    depends_on:
+      postgres-shared:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+
+  evaluation-service:
+    build:
+      context: ./src/evaluation-service
+    ports:
+      - "8004:8004"
+    environment:
+      PORT: 8004
+      REDIS_URL: redis://redis-cache:6379
+      FLAG_SERVICE_URL: http://flag-service:8002
+      TARGETING_SERVICE_URL: http://targeting-service:8003
+      MASTER_KEY: ${MASTER_KEY}
+      AWS_REGION: ${AWS_REGION}
+      AWS_SQS_URL: ${AWS_SQS_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN}
+    networks:
+      - toggle-net
+    depends_on:
+      redis-cache:
+        condition: service_started
+      auth-service:
+        condition: service_started
+      flag-service:
+        condition: service_started
+      targeting-service:
+        condition: service_started
+
+  analytics-service:
+    build:
+      context: ./src/analytics-service
+    ports:
+      - "8005:8005"
+    environment:
+      PORT: 8005
+      AWS_REGION: ${AWS_REGION}
+      AWS_SQS_URL: ${AWS_SQS_URL}
+      AWS_DYNAMODB_TABLE: ${AWS_DYNAMODB_TABLE}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN}
+    networks:
+      - toggle-net

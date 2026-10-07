@@ -1,0 +1,30 @@
+name: Analytics Service CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/analytics-service/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/analytics-service/**'
+
+jobs:
+  call-py:
+    uses: ./.github/workflows/reusable-py.yml
+    with:
+      service-path: 'src/analytics-service'
+      service-name: 'analytics-service'
+      os: 'ubuntu-latest'
+      python-version: '3.9'
+    secrets: inherit
+
+  call-docker:
+    needs: call-py
+    uses: ./.github/workflows/reusable-docker.yml
+    with:
+      service-path: 'src/analytics-service'
+      image-name: 'analytics-service'
+    secrets: inherit
+  

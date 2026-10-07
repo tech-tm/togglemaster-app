@@ -1,0 +1,1 @@
+# Os recursos são obtidos através dos remote states.

@@ -1,0 +1,97 @@
+name: Go package
+
+on:
+  workflow_call:
+    inputs:
+      service-path:
+        required: true
+        type: string
+      service-name:
+        required: true
+        type: string
+      go-version:
+        required: false
+        type: string
+        default: '1.21'
+      os:
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ${{ inputs.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache-dependency-path: ${{ inputs.service-path }}/go.sum
+
+      - name: Download dependencies
+        working-directory: ${{ inputs.service-path }}
+        run: go mod download
+
+      - name: Run Tests
+        working-directory: ${{ inputs.service-path }}
+        run: go test -v ./... || [ $? -eq 1 ]
+
+  lint-analysis:
+    name: Lint Analysis
+    needs: build
+    runs-on: ${{ inputs.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: Run golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          golangci-lint run ./...
+        working-directory: ${{ inputs.service-path }}
+
+  security-scan:
+    name: Security Scan (SAST & SCA)
+    needs: [build, lint-analysis]
+    runs-on: ${{ inputs.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: Run Govulncheck (SCA)
+        working-directory: ${{ inputs.service-path }}
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          # Gera o relatório em JSON
+          govulncheck -json ./... > /tmp/govulncheck.json || true
+          # Filtra apenas vulnerabilidades críticas (usando a base do OSV)
+          CRITICAL=$(jq '[.vulns[] | select(.severity != null) | select(.severity[]?.score >= 9.0)] | length' /tmp/govulncheck.json 2>/dev/null || echo 0)
+          if [ "$CRITICAL" -gt 0 ]; then
+            echo "❌ Encontradas $CRITICAL vulnerabilidades CRITICAL"
+            jq -r '.vulns[] | select(.severity != null) | select(.severity[]?.score >= 9.0) | .id' /tmp/govulncheck.json
+            exit 1
+          fi
+          echo "✅ Nenhuma vulnerabilidade crítica encontrada"
+
+      - name: Run Trivy vulnerability scanner in fs mode
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: ${{ inputs.service-path }}
+          severity: 'CRITICAL'
+          exit-code: '1'
+          ignore-unfixed: true

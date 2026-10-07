@@ -1,0 +1,30 @@
+name: Targeting Service CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/targeting-service/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/targeting-service/**'
+
+jobs:
+  call-py:
+    uses: ./.github/workflows/reusable-py.yml
+    with:
+      service-path: 'src/targeting-service'
+      service-name: 'targeting-service'
+      os: 'ubuntu-latest'
+      python-version: '3.9'
+    secrets: inherit
+
+  call-docker:
+    needs: call-py
+    uses: ./.github/workflows/reusable-docker.yml
+    with:
+      service-path: 'src/targeting-service'
+      image-name: 'targeting-service'
+    secrets: inherit
+  

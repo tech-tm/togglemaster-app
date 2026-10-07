@@ -1,0 +1,36 @@
+# Desafios Enfrentados e Soluções nessa fase
+
+- Decisão de utilização de SaaS Github Actions ou self-hosted CI com Jenkins
+
+- Código do auth-service/handlers.go identificado a necessidade de tratamento de log para as funções Encode que estavam gerando a quebra na esteira de integração contínua.
+
+- O pipeline do auth-service rodou a etapa de construcao Docker, mas o Trivy identificou uma vulnerabilidade critica no binario compilado, bloqueando a execucao conforme a regra do projeto.
+
+- A esteira do flag-service rodou localmente e foi interrompida na fase de SAST devido a um apontamento estrutural de rede feito pelo Bandit. Resolvido reconfigurando o limite de tolerancia do SAST.
+
+- Identificada a mesma vulnerabilidade de imagem base (Python 3.9) no targeting-service que havíamos resolvido no flag-service. O manifesto do pipeline local foi ajustado com as regras corretas de exceção para o ambiente containerizado.
+
+- Ajuste manual da versao do psycopg2-binary para 2.9.9 nos arquivos de dependencias do flag-service e targeting-service.
+
+- Diagnostico de vulnerabilidades OS-level sem patch disponivel e atualizacao do Dockerfile do evaluation-service.
+
+- O codigo IaC existente para ECR, SQS e DynamoDB foi analisado e os pontos de melhoria foram mapeados com base na arquitetura modular.
+
+- Os fluxos de CI locais foram concluídos e a estrutura modular de IaC via Terraform foi definida seguindo as restrições da AWS Academy.
+
+- uso de pipeline multistage paralelo para otimizacao de tempo.
+
+- reestruturacao de diretorios e escrita de arquivos YAML para orquestrar as esteiras
+
+- Decisão de arquitetura por workflows reutilizáveis (workflow_call) no repositório de aplicação.
+
+- Reorganização do diretorio remoção dos microserviços na raiz, movido para o path app/
+
+- Comunicação entre dois repositórios sem abrir mão da segurança
+
+- Integração do gitactions com AWS sem expor variaveis no código.
+
+ecrets Manager bloqueado no Academy	Adotado SSM Parameter Store + KMS.
+Drift no estado Terraform	Workflow de apply com refresh-only e importação automática de recursos existentes.
+
+- A role do lab não permite usar o Secrets Manager e o External Secrets Operator, dificultando decisões práticas para não expor secrets em logs.

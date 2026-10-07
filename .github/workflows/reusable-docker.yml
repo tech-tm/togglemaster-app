@@ -1,0 +1,91 @@
+name: Docker Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      service-path:
+        required: true
+        type: string
+      image-name:
+        required: true
+        type: string
+
+jobs:
+  docker-ecr:
+    name: Docker Build and Push to ECR
+    runs-on: ubuntu-latest
+    outputs:
+      registry: ${{ steps.set-registry.outputs.registry }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        working-directory: ${{ inputs.service-path }}
+        run: docker build -t ${{ inputs.image-name }}:latest .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          scan-ref: ${{ inputs.image-name }}
+          severity: 'CRITICAL'
+          exit-code: '1'
+          ignore-unfixed: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get AWS account ID
+        id: account
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "AWS_ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        run: |
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+            docker login --username AWS --password-stdin ${{ steps.account.outputs.account_id }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+      - name: Set registry output
+        id: set-registry
+        run: |
+          REGISTRY="${{ steps.account.outputs.account_id }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com"
+          echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
+
+      - name: Push Docker image to Amazon ECR
+        run: |
+          # Usa APENAS a variável $REGISTRY (que veio do set-registry)
+          REGISTRY="${{ steps.set-registry.outputs.registry }}"
+          
+          # Tag com a SHA (ex: 480176.../analytics-service:abc123)
+          docker tag ${{ inputs.image-name }} $REGISTRY/${{ inputs.image-name }}:${{ github.sha }}
+          
+          # Push da tag SHA
+          docker push $REGISTRY/${{ inputs.image-name }}:${{ github.sha }}
+
+      - name: Test ECR authorization (opcional)
+        run: |
+          if ! aws ecr get-authorization-token --region ${{ secrets.AWS_REGION }} >/dev/null 2>&1; then
+            echo "ERROR: Cannot get ECR authorization token. Check permissions."
+            exit 1
+          fi
+
+  update-gitops:
+    name: Update GitOps Repository
+    needs: docker-ecr
+    uses: ./.github/workflows/reusable-gitops.yml
+    with:
+      image-name: ${{ inputs.image-name }}
+      image-tag: ${{ github.sha }}
+      registry: ${{ needs.docker-ecr.outputs.registry }}
+      gitops-repo: 'devops-tm/togglemaster-deploy'
+      gitops-branch: 'deploy'
+    secrets: inherit

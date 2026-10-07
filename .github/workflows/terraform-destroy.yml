@@ -1,0 +1,204 @@
+name: Terraform Destroy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
+  BUCKET_STATE: ${{ secrets.TERRAFORM_STATE_BUCKET }}
+
+jobs:
+  # ============================================================
+  # DESTROY COMPUTE (EKS)
+  # ============================================================
+  destroy_compute:
+    name: Destroy Compute (EKS)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/compute
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/compute/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+            
+      - name: Cleanup LoadBalancer Services
+        working-directory: terraform/environments/prod/compute
+        run: |
+          echo "Configurando kubeconfig..."
+          aws eks update-kubeconfig --region $AWS_REGION --name togglemaster-eks
+
+          echo "Deletando serviços LoadBalancer..."
+          kubectl delete svc ingress-nginx-controller -n ingress-nginx --ignore-not-found
+          kubectl delete svc argocd-server -n argocd --ignore-not-found
+
+          echo "Aguardando remoção dos ELBs..."
+          sleep 60
+
+      - name: Terraform Destroy (Compute)
+        working-directory: terraform/environments/prod/compute
+        run: terraform destroy -var-file="terraform.tfvars" -auto-approve
+      - name: Terraform Destroy
+        working-directory: terraform/environments/prod/compute
+        run: |
+          terraform destroy \
+            -var-file="terraform.tfvars" \
+            -auto-approve
+
+  # ============================================================
+  # DESTROY PLATFORM (ECR)
+  # ============================================================
+  destroy_platform:
+    name: Destroy Platform (ECR)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/platform
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/platform/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+      - name: Terraform Destroy
+        working-directory: terraform/environments/prod/platform
+        run: |
+          terraform destroy \
+            -var-file="terraform.tfvars" \
+            -auto-approve
+
+  # ============================================================
+  # DESTROY NETWORKING
+  # ============================================================
+  destroy_networking:
+    name: Destroy Networking
+    needs: [destroy_compute, destroy_platform]   # Aguarda ambos, mas na prática só precisa do compute
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/networking
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/networking/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+      - name: Terraform Destroy
+        working-directory: terraform/environments/prod/networking
+        run: |
+          terraform destroy \
+            -var-file="terraform.tfvars" \
+            -var="terraform_state_bucket=$BUCKET_STATE" \
+            -var="eks_node_security_group=" \
+            -auto-approve
+
+  # ============================================================
+  # DESTROY DATA
+  # ============================================================
+  destroy_data:
+    name: Destroy Data
+    needs: destroy_networking
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/data
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/data/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+      - name: Terraform Destroy
+        working-directory: terraform/environments/prod/data
+        run: |
+          terraform destroy \
+            -var-file="terraform.tfvars" \
+            -auto-approve
+
+  # ============================================================
+  # DESTROY SECURITY
+  # ============================================================
+  destroy_security:
+    name: Destroy Security
+    needs: destroy_data
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Terraform Init
+        working-directory: terraform/environments/prod/security
+        run: |
+          terraform init \
+            -backend-config="bucket=$BUCKET_STATE" \
+            -backend-config="key=prod/security/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -reconfigure
+      - name: Terraform Destroy
+        working-directory: terraform/environments/prod/security
+        run: |
+          terraform destroy \
+            -var-file="terraform.tfvars" \
+            -auto-approve

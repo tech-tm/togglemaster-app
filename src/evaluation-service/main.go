@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs"
 	"github.com/go-redis/redis/v8"
 	"github.com/joho/godotenv"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // Contexto global para o Redis
@@ -29,6 +30,19 @@ type App struct {
 
 func main() {
 	_ = godotenv.Load() // Carrega .env para dev local
+
+	// --- OpenTelemetry (Fase 4 - Bloco 3) --------------------------------
+	// Inicializa o TracerProvider antes de qualquer trabalho relevante.
+	bootCtx := context.Background()
+	shutdownTracer, err := initTracer(bootCtx, "evaluation-service")
+	if err != nil {
+		log.Fatalf("Falha ao inicializar o OpenTelemetry: %v", err)
+	}
+	defer func() {
+		if err := shutdownTracer(context.Background()); err != nil {
+			log.Printf("Erro ao finalizar o tracer: %v", err)
+		}
+	}()
 
 	// --- Configuração ---
 	port := os.Getenv("PORT")
@@ -85,9 +99,14 @@ func main() {
 		log.Println("Cliente SQS inicializado com sucesso.")
 	}
 
-	// Cliente HTTP (com timeout)
+	// Cliente HTTP com transporte OTel: cada chamada feita por este client
+	// gera um span client-side e injeta o cabecalho W3C traceparent nas
+	// requisicoes outbound, ligando o trace deste servico aos spans dos
+	// servicos chamados (flag-service e targeting-service). Essa e a
+	// propagacao que forma o Service Map no Datadog.
 	httpClient := &http.Client{
-		Timeout: 5 * time.Second,
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+		Timeout:   5 * time.Second,
 	}
 
 	// Cria a instância da App
@@ -105,8 +124,12 @@ func main() {
 	mux.HandleFunc("/health", app.healthHandler)
 	mux.HandleFunc("/evaluate", app.evaluationHandler)
 
+	// otelhttp.NewHandler envolve o mux: cada requisicao recebida gera um
+	// span server-side e extrai o traceparent de quem chamou (ex: ingress).
+	handler := otelhttp.NewHandler(mux, "evaluation-service")
+
 	log.Printf("Serviço de Avaliação (Go) rodando na porta %s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -4,3 +4,18 @@ python-dotenv==0.21.0
 boto3==1.26.50
 Werkzeug<3.0.0
 setuptools==67.6.1
+
+# ---------------------------------------------------------------
+# OpenTelemetry (Fase 4 - Bloco 3)
+# ---------------------------------------------------------------
+# As envs OTEL_* sao injetadas pelo Deployment no cluster; aqui
+# apenas garantimos que a CLI 'opentelemetry-instrument' e as
+# instrumentacoes certas estejam disponiveis no runtime.
+#
+# Diferenca vs flag/targeting: aqui usamos botocore (SQS + DynamoDB)
+# em vez de psycopg2.
+opentelemetry-distro==0.52b0
+opentelemetry-exporter-otlp-proto-http==1.31.0
+opentelemetry-instrumentation-flask==0.52b0
+opentelemetry-instrumentation-botocore==0.52b0
+opentelemetry-instrumentation-logging==0.52b0

@@ -5,3 +5,16 @@ python-dotenv==0.21.0
 requests==2.28.1
 Werkzeug<3.0.0
 setuptools==67.6.1
+
+# ---------------------------------------------------------------
+# OpenTelemetry (Fase 4 - Bloco 3)
+# ---------------------------------------------------------------
+# As envs OTEL_* sao injetadas pelo Deployment no cluster; aqui
+# apenas garantimos que a CLI 'opentelemetry-instrument' e as
+# instrumentacoes certas estejam disponiveis no runtime.
+opentelemetry-distro==0.52b0
+opentelemetry-exporter-otlp-proto-http==1.31.0
+opentelemetry-instrumentation-flask==0.52b0
+opentelemetry-instrumentation-requests==0.52b0
+opentelemetry-instrumentation-psycopg2==0.52b0
+opentelemetry-instrumentation-logging==0.52b0

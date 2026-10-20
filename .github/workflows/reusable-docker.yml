@@ -86,6 +86,6 @@ jobs:
       image-name: ${{ inputs.image-name }}
       image-tag: ${{ github.sha }}
       registry: ${{ needs.docker-ecr.outputs.registry }}
-      gitops-repo: 'devops-tm/togglemaster-deploy'
+      gitops-repo: 'tech-tm/togglemaster-deploy'
       gitops-branch: 'deploy'
     secrets: inherit

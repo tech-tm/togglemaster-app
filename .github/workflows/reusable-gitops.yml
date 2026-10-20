@@ -15,7 +15,7 @@ on:
       gitops-repo:
         required: false
         type: string
-        default: 'devops-tm/togglemaster-deploy'
+        default: 'tech-tm/togglemaster-deploy'
       gitops-branch:
         required: false
         type: string

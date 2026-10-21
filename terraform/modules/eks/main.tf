@@ -85,13 +85,15 @@ resource "aws_eks_node_group" "nodes" {
   ]
 }
 
-resource "kubernetes_namespace" "togglemaster" {
-  metadata {
-    name = "togglemaster"
-  }
-
-  depends_on = [
-    aws_eks_cluster.eks,
-    aws_eks_node_group.nodes
-  ]
-}
+# ----------------------------------------------------------------------
+# NOTA: o namespace "togglemaster" NAO e criado aqui.
+#
+# Criar recursos Kubernetes no mesmo apply que provisiona o cluster gera
+# uma corrida de autenticacao (o token do provider kubernetes e resolvido
+# antes do plano de controle aceitar o caller), causando "Unauthorized".
+#
+# O namespace e criado fora do Terraform, por quem usa o cluster:
+#   - workflow argocd-install.yml  (kubectl create namespace togglemaster)
+#   - workflow gitops.yml          (idem)
+#   - Application do ArgoCD         (syncOption CreateNamespace=true)
+# ----------------------------------------------------------------------

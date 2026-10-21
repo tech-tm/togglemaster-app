@@ -13,10 +13,6 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.23"
-    }
   }
 }
 
@@ -36,17 +32,10 @@ module "eks" {
   max_size         = var.max_size
 }
 
-data "aws_eks_cluster_auth" "cluster" {
-  name = module.eks.cluster_name
-}
-
-
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  token                  = data.aws_eks_cluster_auth.cluster.token
-}
-
+# NOTA: o provider kubernetes e o data aws_eks_cluster_auth foram
+# removidos. Nenhum recurso Kubernetes e criado via Terraform (evita a
+# corrida de autenticacao que causava "Unauthorized" ao criar o cluster).
+# Recursos k8s sao gerenciados por kubectl/ArgoCD apos o cluster existir.
 
 resource "aws_ssm_parameter" "cluster_name" {
   name  = "/togglemaster/prod/cluster-name"

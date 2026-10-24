@@ -321,7 +321,7 @@ jobs:
         with:
           github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           script: |
-            const owner = 'togglemaster-fiapdevops';
+            const owner = 'tech-tm';
             const repo = 'togglemaster-deploy';
             const workflowFile = 'argocd-install.yml';
             const targetBranch = 'deploy';

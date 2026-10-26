@@ -73,6 +73,7 @@ jobs:
         id: drift
         working-directory: terraform/environments/prod/${{ matrix.layer }}
         shell: bash
+        continue-on-error: true
         run: |
           # Networking usa --var em vez de --var-file (pattern do apply)
           if [ "${{ matrix.layer }}" = "networking" ]; then
@@ -91,6 +92,17 @@ jobs:
           set -e
 
           echo "exit_code=$REFRESH_EXIT" >> $GITHUB_OUTPUT
+
+          # Detecta cenarios de "ambiente destruido" (cross-stack dependency
+          # ou SSM parameter inexistente) e reporta como DESTROYED em vez de ERROR.
+          if [ $REFRESH_EXIT -ne 0 ] && [ $REFRESH_EXIT -ne 2 ]; then
+            if grep -qE "Unsupported attribute|data.terraform_remote_state.*outputs is object with no attributes|couldn't find resource|No value found|data source \".*\" is not supported" /tmp/plan-${{ matrix.layer }}.log; then
+              echo "⊘ ${{ matrix.layer }}: ambiente parcial/destruido (dependencia cross-stack ou SSM inexistente)"
+              echo "    Isso e NORMAL apos 'terraform destroy'. Rode 'Terraform Apply' para recriar."
+              echo "status=DESTROYED" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
 
           case $REFRESH_EXIT in
             0)
@@ -123,10 +135,11 @@ jobs:
         run: |
           STATUS="${{ steps.drift.outputs.status }}"
           case $STATUS in
-            OK)    EMOJI="✅" ; MSG="State sincronizado com a AWS" ;;
-            DRIFT) EMOJI="⚠️"  ; MSG="Drift detectado — rode Terraform Apply ou re-rode com auto_reconcile=true" ;;
-            ERROR) EMOJI="❌" ; MSG="Erro ao verificar — ver logs do step" ;;
-            *)     EMOJI="❓" ; MSG="Status desconhecido" ;;
+            OK)        EMOJI="✅" ; MSG="State sincronizado com a AWS" ;;
+            DRIFT)     EMOJI="⚠️"  ; MSG="Drift detectado — rode Terraform Apply ou re-rode com auto_reconcile=true" ;;
+            DESTROYED) EMOJI="⊘"  ; MSG="Ambiente destruido — normal apos terraform destroy. Rode Terraform Apply para recriar." ;;
+            ERROR)     EMOJI="❌" ; MSG="Erro ao verificar — ver logs do step" ;;
+            *)         EMOJI="❓" ; MSG="Status desconhecido" ;;
           esac
 
           # Primeiro job desse matrix inicializa a tabela

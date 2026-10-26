@@ -41,6 +41,35 @@ jobs:
             -backend-config="region=$AWS_REGION" \
             -reconfigure
 
+      # Refresh-only: sincroniza o state do S3 com a realidade na AWS,
+      # antes do apply. Remove do state recursos que foram destruidos
+      # fora do Terraform (ex: destroy anterior falhou no meio da
+      # sessao AWS Academy). Evita "ResourceNotFound" no apply seguinte.
+      - name: Refresh State (detect and reconcile drift)
+        working-directory: terraform/environments/prod/security
+        shell: bash
+        run: |
+          set +e
+          terraform plan \
+            -refresh-only \
+            -detailed-exitcode \
+            -var-file="terraform.tfvars" \
+            -out=refresh.tfplan
+          REFRESH_EXIT=$?
+          set -e
+
+          if [ $REFRESH_EXIT -eq 1 ]; then
+            echo "::error::Terraform refresh-only plan falhou."
+            exit 1
+          fi
+
+          if [ $REFRESH_EXIT -eq 2 ]; then
+            echo "Drift detectado. Aplicando refresh-only para sincronizar state..."
+            terraform apply -auto-approve refresh.tfplan
+          else
+            echo "✓ Sem drift. State sincronizado com a AWS."
+          fi
+
       - name: Terraform Apply (create/update)
         working-directory: terraform/environments/prod/security
         run: |
@@ -238,6 +267,35 @@ jobs:
             -backend-config="region=$AWS_REGION" \
             -reconfigure
 
+      # Refresh-only: sincroniza o state com a AWS antes do apply.
+      # Pos-destroy parcial, muitos ECRs/SQS/DynamoDB podem ter sumido
+      # da AWS mas continuar no state. Esse passo remove os fantasmas
+      # (fonte comum de erro "RepositoryNotFoundException").
+      - name: Refresh State (detect and reconcile drift)
+        working-directory: terraform/environments/prod/platform
+        shell: bash
+        run: |
+          set +e
+          terraform plan \
+            -refresh-only \
+            -detailed-exitcode \
+            -var-file="terraform.tfvars" \
+            -out=refresh.tfplan
+          REFRESH_EXIT=$?
+          set -e
+
+          if [ $REFRESH_EXIT -eq 1 ]; then
+            echo "::error::Terraform refresh-only plan falhou."
+            exit 1
+          fi
+
+          if [ $REFRESH_EXIT -eq 2 ]; then
+            echo "Drift detectado. Aplicando refresh-only para sincronizar state..."
+            terraform apply -auto-approve refresh.tfplan
+          else
+            echo "✓ Sem drift. State sincronizado com a AWS."
+          fi
+
       - name: Terraform Apply (create/update)
         working-directory: terraform/environments/prod/platform
         run: |
@@ -271,6 +329,33 @@ jobs:
             -backend-config="region=$AWS_REGION" \
             -reconfigure
 
+      # Refresh-only antes do apply: evita que state fantasma do EKS
+      # (cluster ou node group destruidos manualmente) quebre o apply.
+      - name: Refresh State (detect and reconcile drift)
+        working-directory: terraform/environments/prod/compute
+        shell: bash
+        run: |
+          set +e
+          terraform plan \
+            -refresh-only \
+            -detailed-exitcode \
+            -var-file="terraform.tfvars" \
+            -out=refresh.tfplan
+          REFRESH_EXIT=$?
+          set -e
+
+          if [ $REFRESH_EXIT -eq 1 ]; then
+            echo "::error::Terraform refresh-only plan falhou."
+            exit 1
+          fi
+
+          if [ $REFRESH_EXIT -eq 2 ]; then
+            echo "Drift detectado. Aplicando refresh-only para sincronizar state..."
+            terraform apply -auto-approve refresh.tfplan
+          else
+            echo "✓ Sem drift. State sincronizado com a AWS."
+          fi
+
       - name: Terraform Apply (create/update)
         working-directory: terraform/environments/prod/compute
         run: |
@@ -303,6 +388,33 @@ jobs:
             -backend-config="key=prod/networking/terraform.tfstate" \
             -backend-config="region=$AWS_REGION" \
             -reconfigure
+
+      # Refresh-only antes do apply: Security Groups podem ter sido
+      # destruidos junto com o VPC/EKS, e o state ficaria desalinhado.
+      - name: Refresh State (detect and reconcile drift)
+        working-directory: terraform/environments/prod/networking
+        shell: bash
+        run: |
+          set +e
+          terraform plan \
+            -refresh-only \
+            -detailed-exitcode \
+            -var="terraform_state_bucket=$BUCKET_STATE" \
+            -out=refresh.tfplan
+          REFRESH_EXIT=$?
+          set -e
+
+          if [ $REFRESH_EXIT -eq 1 ]; then
+            echo "::error::Terraform refresh-only plan falhou."
+            exit 1
+          fi
+
+          if [ $REFRESH_EXIT -eq 2 ]; then
+            echo "Drift detectado. Aplicando refresh-only para sincronizar state..."
+            terraform apply -auto-approve refresh.tfplan
+          else
+            echo "✓ Sem drift. State sincronizado com a AWS."
+          fi
 
       - name: Terraform Apply
         working-directory: terraform/environments/prod/networking

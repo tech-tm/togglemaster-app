@@ -32,15 +32,17 @@ func main() {
 	_ = godotenv.Load() // Carrega .env para dev local
 
 	// --- OpenTelemetry (Fase 4 - Bloco 3) --------------------------------
-	// Inicializa o TracerProvider antes de qualquer trabalho relevante.
+	// Inicializa TracerProvider + MeterProvider antes de qualquer trabalho
+	// relevante. Metricas HTTP sao emitidas pelo otelhttp.NewHandler e
+	// otelhttp.NewTransport apenas se houver MeterProvider configurado.
 	bootCtx := context.Background()
-	shutdownTracer, err := initTracer(bootCtx, "evaluation-service")
+	shutdownOTel, err := initOTel(bootCtx, "evaluation-service")
 	if err != nil {
 		log.Fatalf("Falha ao inicializar o OpenTelemetry: %v", err)
 	}
 	defer func() {
-		if err := shutdownTracer(context.Background()); err != nil {
-			log.Printf("Erro ao finalizar o tracer: %v", err)
+		if err := shutdownOTel(context.Background()); err != nil {
+			log.Printf("Erro ao finalizar OTel: %v", err)
 		}
 	}()
 

@@ -23,16 +23,17 @@ func main() {
 	_ = godotenv.Load()
 
 	// --- OpenTelemetry (Fase 4 - Bloco 3) --------------------------------
-	// Inicializa o TracerProvider antes de qualquer trabalho relevante
-	// para capturar spans tambem do caminho de setup (DB, etc.).
+	// Inicializa TracerProvider + MeterProvider antes de qualquer trabalho
+	// relevante para capturar spans e metricas tambem do caminho de setup
+	// (DB, etc.).
 	ctx := context.Background()
-	shutdownTracer, err := initTracer(ctx, "auth-service")
+	shutdownOTel, err := initOTel(ctx, "auth-service")
 	if err != nil {
 		log.Fatalf("Falha ao inicializar o OpenTelemetry: %v", err)
 	}
 	defer func() {
-		if err := shutdownTracer(context.Background()); err != nil {
-			log.Printf("Erro ao finalizar o tracer: %v", err)
+		if err := shutdownOTel(context.Background()); err != nil {
+			log.Printf("Erro ao finalizar OTel: %v", err)
 		}
 	}()
 

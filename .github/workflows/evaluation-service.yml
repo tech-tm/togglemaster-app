@@ -9,6 +9,10 @@ on:
     branches: [ main ]
     paths:
       - 'src/evaluation-service/**'
+  # Permite disparar manualmente via Actions UI ou 'gh workflow run'.
+  # Util quando precisamos forcar build/push sem alterar arquivos do
+  # servico (ex: Fase 2 do DEPLOY.md apos recriar o ECR do zero).
+  workflow_dispatch:
 
 jobs:
   call-go:

@@ -75,9 +75,17 @@ que não exija privilégios especiais (eBPF).
 
 | Arquivo | Mudança |
 |---|---|
-| `otel.go` | **novo** — função `initTracer()` que configura TracerProvider, exporter OTLP HTTP e propagadores W3C |
-| `main.go` | Chama `initTracer` no boot + envolve o `mux` com `otelhttp.NewHandler(mux, "<nome-servico>")` |
-| `go.mod` | +5 deps diretas OTel |
+| `otel.go` | **novo** — função `initOTel()` que configura **TracerProvider + MeterProvider**, exporters OTLP HTTP (traces e metrics) e propagadores W3C |
+| `main.go` | Chama `initOTel` no boot + envolve o `mux` com `otelhttp.NewHandler(mux, "<nome-servico>")` |
+| `go.mod` | +7 deps diretas OTel (traces + metrics) |
+
+> ⚠️ **Importante — ambos os providers são necessários:** o `otelhttp.NewHandler`
+> emite 2 tipos de telemetria por request: **span** (via TracerProvider) **e**
+> histograma `http.server.request.duration` (via MeterProvider). Se só o
+> TracerProvider for configurado (como era antes), o MeterProvider default é
+> no-op e **nenhuma métrica HTTP é emitida** — o painel "Requisições HTTP
+> por serviço" do Grafana fica vazio para os serviços Go. O `initOTel`
+> atual configura os 2 e envia pro OTel Collector a cada 10s (PeriodicReader).
 
 **Mudanças adicionais apenas no `evaluation-service`:**
 
@@ -111,7 +119,7 @@ pelo workflow `togglemaster-deploy/.github/workflows/gitops.yml`.
 
 Sem `OTEL_EXPORTER_OTLP_ENDPOINT` definido:
 
-- **Go**: `initTracer` detecta a env vazia e vira **no-op silencioso** — o processo sobe normalmente, nenhum span é exportado.
+- **Go**: `initOTel` detecta a env vazia e vira **no-op silencioso** — o processo sobe normalmente, nem spans nem métricas são exportados.
 - **Python**: `opentelemetry-instrument` carrega as instrumentações mas o exporter OTLP falha silenciosamente ao conectar — processo continua funcionando.
 
 Isso significa que os microsserviços continuam **100% funcionais** em `docker-compose up` local sem exigir Collector.

@@ -44,3 +44,5 @@ Este é o serviço de regras de segmentação (targeting) do projeto ToggleMaste
     gunicorn --bind 0.0.0.0:8003 app:app
     ```
     O servidor estará rodando em `http://localhost:8003`.
+
+teste

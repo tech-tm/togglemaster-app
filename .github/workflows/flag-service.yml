@@ -21,7 +21,7 @@ jobs:
       service-path: 'src/flag-service'
       service-name: 'flag-service'
       os: 'ubuntu-latest'
-      python-version: '3.9'
+      python-version: '3.12'
     secrets: inherit
 
   call-docker:

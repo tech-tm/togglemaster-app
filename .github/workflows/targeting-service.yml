@@ -21,7 +21,7 @@ jobs:
       service-path: 'src/targeting-service'
       service-name: 'targeting-service'
       os: 'ubuntu-latest'
-      python-version: '3.9'
+      python-version: '3.12'
     secrets: inherit
 
   call-docker:

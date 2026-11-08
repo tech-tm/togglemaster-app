@@ -12,9 +12,9 @@ on:
           required: true
           type: string
         python-version:
-          description: 'Python version to use'
+          description: 'Python version to use (alinhada com os Dockerfiles: python:3.12-slim)'
           type: string
-          default: '3.9'
+          default: '3.12'
         os:
           description: 'Operating system to run the workflow on'
           type: string
